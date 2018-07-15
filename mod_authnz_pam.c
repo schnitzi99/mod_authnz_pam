@@ -30,6 +30,11 @@
 
 #include "mod_auth.h"
 
+static APR_OPTIONAL_FN_TYPE(ap_authn_cache_store) *authn_cache_store = NULL;
+#define AUTHN_CACHE_STORE(r,user,realm,data) \
+	if (authn_cache_store != NULL) \
+		authn_cache_store((r), "PAM", (user), (realm), (data))
+
 typedef struct {
 	char * pam_service;
 	char * expired_redirect_url;
@@ -185,6 +190,7 @@ static authn_status pam_authenticate_with_login_password(request_rec * r, const 
 				}
 			}
 		}
+		AUTHN_CACHE_STORE(r, login, NULL, password);
 	}
 	if (ret != PAM_SUCCESS) {
 		const char * strerr = pam_strerror(pamh, ret);
@@ -266,6 +272,10 @@ static int check_user_access(request_rec * r) {
 }
 #endif
 
+static void opt_retr(void) {
+	authn_cache_store = APR_RETRIEVE_OPTIONAL_FN(ap_authn_cache_store);
+}
+
 static void register_hooks(apr_pool_t * p) {
 #ifdef AUTHN_PROVIDER_VERSION
 	ap_register_auth_provider(p, AUTHN_PROVIDER_GROUP, "PAM", AUTHN_PROVIDER_VERSION, &authn_pam_provider, AP_AUTH_INTERNAL_PER_CONF);
@@ -275,6 +285,7 @@ static void register_hooks(apr_pool_t * p) {
 	ap_hook_auth_checker(check_user_access, NULL, NULL, APR_HOOK_MIDDLE);
 #endif
 	APR_REGISTER_OPTIONAL_FN(pam_authenticate_with_login_password);
+	ap_hook_optional_fn_retrieve(opt_retr, NULL, NULL, APR_HOOK_MIDDLE);
 }
 
 #ifdef AP_DECLARE_MODULE
