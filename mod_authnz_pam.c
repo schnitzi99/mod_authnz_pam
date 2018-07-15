@@ -30,10 +30,14 @@
 
 #include "mod_auth.h"
 
+#if AP_MODULE_MAGIC_AT_LEAST(20100625,0)
 static APR_OPTIONAL_FN_TYPE(ap_authn_cache_store) *authn_cache_store = NULL;
 #define AUTHN_CACHE_STORE(r,user,realm,data) \
 	if (authn_cache_store != NULL) \
 		authn_cache_store((r), "PAM", (user), (realm), (data))
+#else
+#define AUTHN_CACHE_STORE(r,user,realm,data)
+#endif
 
 typedef struct {
 	char * pam_service;
@@ -272,9 +276,11 @@ static int check_user_access(request_rec * r) {
 }
 #endif
 
+#if AP_MODULE_MAGIC_AT_LEAST(20100625,0)
 static void opt_retr(void) {
 	authn_cache_store = APR_RETRIEVE_OPTIONAL_FN(ap_authn_cache_store);
 }
+#endif
 
 static void register_hooks(apr_pool_t * p) {
 #ifdef AUTHN_PROVIDER_VERSION
@@ -285,7 +291,9 @@ static void register_hooks(apr_pool_t * p) {
 	ap_hook_auth_checker(check_user_access, NULL, NULL, APR_HOOK_MIDDLE);
 #endif
 	APR_REGISTER_OPTIONAL_FN(pam_authenticate_with_login_password);
+#if AP_MODULE_MAGIC_AT_LEAST(20100625,0)
 	ap_hook_optional_fn_retrieve(opt_retr, NULL, NULL, APR_HOOK_MIDDLE);
+#endif
 }
 
 #ifdef AP_DECLARE_MODULE
