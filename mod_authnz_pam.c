@@ -17,6 +17,7 @@
 
 #include <security/pam_appl.h>
 
+#include "apr_general.h"
 #include "apr_strings.h"
 #include "apr_md5.h"
 
@@ -31,12 +32,6 @@
 
 #include "mod_auth.h"
 
-static APR_OPTIONAL_FN_TYPE(ap_authn_cache_store) *authn_cache_store = NULL;
-#define AUTHN_CACHE_STORE(r,user,realm,data) \
-	if (authn_cache_store != NULL) \
-        authn_cache_store((r), "PAM", (user), (realm), (data))
-// copied from socache implementations of dbm and dbd @ http://svn.eu.apache.org/viewvc?view=revision&revision=957072
-
 typedef struct {
 	char * pam_service;
 	char * expired_redirect_url;
@@ -46,12 +41,6 @@ static void * create_dir_conf(apr_pool_t * pool, char * dir) {
 	authnz_pam_config_rec * cfg = apr_pcalloc(pool, sizeof(authnz_pam_config_rec));
 	return cfg;
 }
-
-static void opt_retr(void)
-{
-	authn_cache_store = APR_RETRIEVE_OPTIONAL_FN(ap_authn_cache_store);
-}
-// copied from socache implementations of dbm and dbd @ http://svn.eu.apache.org/viewvc?view=revision&revision=957072
 
 static const command_rec authnz_pam_cmds[] = {
 	AP_INIT_TAKE1("AuthPAMService", ap_set_string_slot,
@@ -155,6 +144,32 @@ module AP_MODULE_DECLARE_DATA authnz_pam_module;
 #define SHOW_MODULE "mod_authnz_pam: "
 #endif
 
+static APR_OPTIONAL_FN_TYPE(ap_authn_cache_store) *authn_cache_store = NULL;
+
+// copied from socache implementations of dbm and dbd @ http://svn.eu.apache.org/viewvc?view=revision&revision=957072
+static void opt_retr(void) {
+	authn_cache_store = APR_RETRIEVE_OPTIONAL_FN(ap_authn_cache_store);
+}
+
+void store_password_to_cache(request_rec * r, const char * login, const char * password) {
+	if (!(authn_cache_store && login && password)) {
+		return;
+	}
+	unsigned char salt[16];
+	char hash[61];
+	if (apr_generate_random_bytes(salt, sizeof(salt)) != APR_SUCCESS) {
+		ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r,
+			SHOW_MODULE "apr_generate_random_bytes failed, will not cache password");
+		return;
+	}
+	if (apr_bcrypt_encode(password, 5, salt, sizeof(salt), hash, sizeof(hash)) != APR_SUCCESS) {
+		ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r,
+			SHOW_MODULE "apr_bcrypt_encode failed, will not cache password");
+		return;
+	}
+	authn_cache_store(r, "PAM", login, NULL, hash);
+}
+
 #define _REMOTE_USER_ENV_NAME "REMOTE_USER"
 #define _EXTERNAL_AUTH_ERROR_ENV_NAME "EXTERNAL_AUTH_ERROR"
 #define _PAM_STEP_AUTH 1
@@ -167,7 +182,6 @@ static authn_status pam_authenticate_with_login_password(request_rec * r, const 
 	const char * stage = "PAM transaction failed for service";
 	const char * param = pam_service;
 	int ret;
-	char *salt = "QSj/ovPs"; // Salt for password encryption needed for socache. Todo: use random salt
 	ret = pam_start(pam_service, login, &pam_conversation, &pamh);
 	if (ret == PAM_SUCCESS) {
 		const char * remote_host_or_ip = ap_get_remote_host(r->connection, r->per_dir_config, REMOTE_NAME, NULL);
@@ -181,6 +195,9 @@ static authn_status pam_authenticate_with_login_password(request_rec * r, const 
 			param = login;
 			stage = "PAM authentication failed for user";
 			ret = pam_authenticate(pamh, PAM_SILENT | PAM_DISALLOW_NULL_AUTHTOK);
+			if (ret == PAM_SUCCESS) {
+				store_password_to_cache(r, login, password);
+			}
 		}
 		if ((ret == PAM_SUCCESS) && (steps & _PAM_STEP_ACCOUNT)) {
 			param = login;
@@ -211,20 +228,6 @@ static authn_status pam_authenticate_with_login_password(request_rec * r, const 
 	r->user = apr_pstrdup(r->pool, login);
 	ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r, SHOW_MODULE "PAM authentication passed for user %s", login);
 	pam_end(pamh, ret);
-
-	// Do socache-Caching if authentification was successful. 
-	// 1. Do hash of password as socache only compares encrypted passwords (and caching unhashed password is a bad idea)
-	apr_size_t resultLen = 6 + strlen(salt) + 1 + 22 + 1;  // 6 = $apr1$
-        	                                                 // 1 = $ (terminating the salt)
-                	                                         // 22 = hash
-                        	                                 // 1 = terminating null byte
-	char result[resultLen];
-	// +1 to resultLen because, for some unknown reason, apr_md5_encode() wants
-	// an additional byte
-	apr_status_t status = apr_md5_encode(password, salt, result, resultLen + 1);
-	//2. store password in cache
-	AUTHN_CACHE_STORE(r, login, NULL, result);
-	
 	return AUTH_GRANTED;
 }
 
