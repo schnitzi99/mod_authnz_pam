@@ -8,19 +8,24 @@ services:
 install: true
 
 stages:
-- build-rpm
+- build-and-test
 
 matrix:
   include:
-    - stage: build
-      env: from=registry.fedoraproject.org/fedora:rawhide dockerfile=fedora
-    - stage: build
-      env: from=registry.fedoraproject.org/fedora:28 dockerfile=fedora
-    - stage: build
-      env: from=centos:centos7 dockerfile=centos
-    - stage: build
-      env: from=centos:centos6 dockerfile=centos
+    - stage: build-and-test
+      env: fedora=rawhide
+    - stage: build-and-test
+      env: fedora=28
+    - stage: build-and-test
+      env: centos=centos7
+    - stage: build-and-test
+      env: centos=centos6
+
+before_script:
+- if test -n "$fedora" ; then sed -i "s#^FROM.*#FROM registry.fedoraproject.org/fedora:$fedora#" tests/Dockerfile ; fi
+- if test -n "$centos" ; then sed -i "s#^FROM.*#FROM centos:$centos#" tests/Dockerfile ; fi
 
 script:
-- sed -i "s#^FROM.*#FROM $from#" tests/Dockerfile.$dockerfile
-- docker build -f tests/Dockerfile.$dockerfile .
+- docker build -t mod_authnz_pam -f tests/Dockerfile .
+- docker run --name mod_authnz_pam --rm -d mod_authnz_pam
+- docker exec mod_authnz_pam tests/run.sh
